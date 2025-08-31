@@ -21,4 +21,12 @@ FRESULT SD_WriteToFile(const char *path, const void *data, uint32_t length, uint
 FRESULT SD_ReadFromFile(const char *path, void *buffer, uint32_t bufsize, uint32_t *bytesRead);
 FRESULT SD_DeleteFile(const char *path);
 
+typedef struct {
+    uint8_t *buffer;
+    uint32_t length;
+    char filename[64];
+    bool write; // true for write, false for read
+    SemaphoreHandle_t done; // signal completion
+} SD_Job_t;
+
 #endif

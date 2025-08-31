@@ -27,6 +27,8 @@
 #include <stdarg.h> //for va_list var arg functions
 #include <stdio.h>
 #include "SDCard.h"
+#include "stm32f411xe.h"
+#include "stm32f4xx_hal_gpio.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -65,11 +67,11 @@ static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART2_UART_Init(void);
 void StartDefaultTask(void const * argument);
-void GUI_Init(void const * argument);
-void Audio_Init(void const * argument);
-void Decoder_Init(void const * argument);
-void SD_Init(void const * argument);
-void Playback_Init(void const * argument);
+void GUI_Start(void const * argument);
+void Audio_Start(void const * argument);
+void Decoder_Start(void const * argument);
+void SD_Start(void const * argument);
+void Playback_Start(void const * argument);
 
 /* USER CODE BEGIN PFP */
 void myprintf(const char *fmt, ...);
@@ -148,23 +150,23 @@ int main(void)
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* definition and creation of GUI_Task */
-  osThreadDef(GUI_Task, GUI_Init, osPriorityBelowNormal, 0, 1024);
+  osThreadDef(GUI_Task, GUI_Start, osPriorityBelowNormal, 0, 1024);
   GUI_TaskHandle = osThreadCreate(osThread(GUI_Task), NULL);
 
   /* definition and creation of Audio_Task */
-  osThreadDef(Audio_Task, Audio_Init, osPriorityHigh, 0, 256);
+  osThreadDef(Audio_Task, Audio_Start, osPriorityHigh, 0, 256);
   Audio_TaskHandle = osThreadCreate(osThread(Audio_Task), NULL);
 
   /* definition and creation of Mp3Decoder_Task */
-  osThreadDef(Mp3Decoder_Task, Decoder_Init, osPriorityAboveNormal, 0, 1024);
+  osThreadDef(Mp3Decoder_Task, Decoder_Start, osPriorityAboveNormal, 0, 1024);
   Mp3Decoder_TaskHandle = osThreadCreate(osThread(Mp3Decoder_Task), NULL);
 
   /* definition and creation of SdCard_Task */
-  osThreadDef(SdCard_Task, SD_Init, osPriorityAboveNormal, 0, 512);
+  osThreadDef(SdCard_Task, SD_Start, osPriorityAboveNormal, 0, 512);
   SdCard_TaskHandle = osThreadCreate(osThread(SdCard_Task), NULL);
 
   /* definition and creation of Playback_Task */
-  osThreadDef(Playback_Task, Playback_Init, osPriorityNormal, 0, 256);
+  osThreadDef(Playback_Task, Playback_Start, osPriorityNormal, 0, 256);
   Playback_TaskHandle = osThreadCreate(osThread(Playback_Task), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
@@ -372,95 +374,94 @@ void StartDefaultTask(void const * argument)
   /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_GUI_Init */
+/* USER CODE BEGIN Header_GUI_Start */
 /**
 * @brief Function implementing the GUI_Task thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_GUI_Init */
-void GUI_Init(void const * argument)
+/* USER CODE END Header_GUI_Start */
+void GUI_Start(void const * argument)
 {
-  /* USER CODE BEGIN GUI_Init */
+  /* USER CODE BEGIN GUI_Start */
   /* Infinite loop */
   for(;;)
   {
-	  osDelay(1);
+    osDelay(1);
   }
-  /* USER CODE END GUI_Init */
+  /* USER CODE END GUI_Start */
 }
 
-/* USER CODE BEGIN Header_Audio_Init */
+/* USER CODE BEGIN Header_Audio_Start */
 /**
 * @brief Function implementing the Audio_Task thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_Audio_Init */
-void Audio_Init(void const * argument)
+/* USER CODE END Header_Audio_Start */
+void Audio_Start(void const * argument)
 {
-  /* USER CODE BEGIN Audio_Init */
+  /* USER CODE BEGIN Audio_Start */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END Audio_Init */
+  /* USER CODE END Audio_Start */
 }
 
-/* USER CODE BEGIN Header_Decoder_Init */
+/* USER CODE BEGIN Header_Decoder_Start */
 /**
 * @brief Function implementing the Mp3Decoder_Task thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_Decoder_Init */
-void Decoder_Init(void const * argument)
+/* USER CODE END Header_Decoder_Start */
+void Decoder_Start(void const * argument)
 {
-  /* USER CODE BEGIN Decoder_Init */
+  /* USER CODE BEGIN Decoder_Start */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END Decoder_Init */
+  /* USER CODE END Decoder_Start */
 }
 
-/* USER CODE BEGIN Header_SD_Init */
+/* USER CODE BEGIN Header_SD_Start */
 /**
 * @brief Function implementing the SdCard_Task thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_SD_Init */
-void SD_Init(void const * argument)
+/* USER CODE END Header_SD_Start */
+void SD_Start(void const * argument)
 {
-  /* USER CODE BEGIN SD_Init */
-  /* Infinite loop */
-  for(;;)
-  {
-	myprintf("In SD Card init.\n");
-    osDelay(10000);
-  }
-  /* USER CODE END SD_Init */
-}
-
-/* USER CODE BEGIN Header_Playback_Init */
-/**
-* @brief Function implementing the Playback_Task thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_Playback_Init */
-void Playback_Init(void const * argument)
-{
-  /* USER CODE BEGIN Playback_Init */
+  /* USER CODE BEGIN SD_Start */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END Playback_Init */
+  /* USER CODE END SD_Start */
+}
+
+/* USER CODE BEGIN Header_Playback_Start */
+/**
+* @brief Function implementing the Playback_Task thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_Playback_Start */
+void Playback_Start(void const * argument)
+{
+  /* USER CODE BEGIN Playback_Start */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END Playback_Start */
 }
 
 /**
@@ -499,8 +500,7 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
