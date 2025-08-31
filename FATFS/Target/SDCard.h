@@ -15,6 +15,7 @@ typedef enum {
     SD_JOB_GETINFO,
     SD_JOB_FORMAT,
     SD_JOB_LISTDIRECTORY,
+    SD_JOB_STREAM,
     SD_JOB_DELETE
 } SD_JobType_t;
 

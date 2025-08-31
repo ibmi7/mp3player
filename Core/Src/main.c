@@ -42,7 +42,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define STREAM_BUFFER_NUM 4
+#define STREAM_BUFFER_SIZE 4096 //use 4KB for buffer
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -64,8 +65,10 @@ osThreadId Playback_TaskHandle;
 osThreadId UART_TaskHandle;
 osMessageQId sdQueueHandle;
 osMessageQId uartQueueHandle;
+osMessageQId freeBufferQueueHandle;
+osMessageQId filledBufferQueueHandle;
 /* USER CODE BEGIN PV */
-
+static uint8_t sdBuffers[STREAM_BUFFER_NUM][STREAM_BUFFER_SIZE];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -157,6 +160,14 @@ int main(void)
   osMessageQDef(uartQueue, 16, char*);
   uartQueueHandle = osMessageCreate(osMessageQ(uartQueue), NULL);
 
+  /* definition and creation of freeBufferQueue */
+  osMessageQDef(freeBufferQueue, 4, void*);
+  freeBufferQueueHandle = osMessageCreate(osMessageQ(freeBufferQueue), NULL);
+
+  /* definition and creation of filledBufferQueue */
+  osMessageQDef(filledBufferQueue, 4, void*);
+  filledBufferQueueHandle = osMessageCreate(osMessageQ(filledBufferQueue), NULL);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -171,11 +182,11 @@ int main(void)
   GUI_TaskHandle = osThreadCreate(osThread(GUI_Task), NULL);
 
   /* definition and creation of Audio_Task */
-  osThreadDef(Audio_Task, Audio_Start, osPriorityHigh, 0, 256);
+  osThreadDef(Audio_Task, Audio_Start, osPriorityRealtime, 0, 256);
   Audio_TaskHandle = osThreadCreate(osThread(Audio_Task), NULL);
 
   /* definition and creation of Mp3Decoder_Task */
-  osThreadDef(Mp3Decoder_Task, Decoder_Start, osPriorityAboveNormal, 0, 1024);
+  osThreadDef(Mp3Decoder_Task, Decoder_Start, osPriorityHigh, 0, 1024);
   Mp3Decoder_TaskHandle = osThreadCreate(osThread(Mp3Decoder_Task), NULL);
 
   /* definition and creation of SdCard_Task */
@@ -467,14 +478,20 @@ void SD_Start(void const * argument)
     SD_Job_t *currentJob;
     FIL file;
     FRESULT res;
+    void* stream_buffer;
     osDelay(1000);
+    /* Initialize buffers */
+    for (int i = 0; i < STREAM_BUFFER_NUM; i++) {
+      void *ptr = sdBuffers[i];
+      xQueueSend(freeBufferQueueHandle, &ptr, 0);
+    }
+    /* Initialie SD Card*/
     res = SD_Initialize();
     if (res != FR_OK)
     {
         myprintf("Failed to initialize SD Card with error %d\n", res);
         while(1);
     }
-
     myprintf("SD Initialized.\n");
     for(;;)
     {
@@ -514,6 +531,7 @@ void SD_Start(void const * argument)
                     res = SD_GetInfo(&(currentJob->info->totalMB), &(currentJob->info->freeMB));
                     currentJob->status = (res == FR_OK) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
                     currentJob->fresult = res;
+                    break;
                     
                 }
                 case SD_JOB_FORMAT:
@@ -535,11 +553,11 @@ void SD_Start(void const * argument)
                     }
                     else
                     {
-                        while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
-                            // Format output: add file/dir type, size, etc. as needed
-                            myprintf("%s%s\n", (fno.fattrib & AM_DIR) ? "[DIR] " : "      ", fno.fname);
-                        }
-                        res = f_closedir(&dir);
+                      while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
+                          // Format output: add file/dir type, size, etc. as needed
+                          myprintf("%s%s\n", (fno.fattrib & AM_DIR) ? "[DIR] " : "      ", fno.fname);
+                      }
+                      res = f_closedir(&dir);
                     }
                     currentJob->status = (res == FR_OK) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
                     currentJob->fresult = res;
@@ -552,6 +570,24 @@ void SD_Start(void const * argument)
                     currentJob->status = (res == FR_OK) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
                     currentJob->fresult = res;
                     break;
+                }
+                case SD_JOB_STREAM:
+                {
+                  res = f_open(&file, currentJob->filename, FA_READ);
+                  for (;;){
+                    if (xQueueReceive(freeBufferQueueHandle, &stream_buffer, portMAX_DELAY)){
+                      f_read(&file, stream_buffer, STREAM_BUFFER_SIZE, &(currentJob->bytesTransferred));
+                      xQueueSend(filledBufferQueueHandle, &stream_buffer, portMAX_DELAY);
+
+                      if (currentJob->bytesTransferred < STREAM_BUFFER_SIZE){
+                        // EOF reached, job done
+                        currentJob->status = SD_JOB_SUCCESS;
+                        break;
+                      }
+                    }
+                  }
+
+                  break;
                 }
                 default:
                 {
