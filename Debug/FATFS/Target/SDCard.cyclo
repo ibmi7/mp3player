@@ -1,0 +1,10 @@
+../FATFS/Target/SDCard.c:21:9:SD_Initialize	1
+../FATFS/Target/SDCard.c:26:6:RES_IsInserted	1
+../FATFS/Target/SDCard.c:31:9:SD_GetInfo	2
+../FATFS/Target/SDCard.c:48:9:SD_Deinitialize	1
+../FATFS/Target/SDCard.c:54:9:SD_Format	1
+../FATFS/Target/SDCard.c:60:9:SD_ListDirectory	5
+../FATFS/Target/SDCard.c:82:9:SD_CreateFile	3
+../FATFS/Target/SDCard.c:92:9:SD_WriteToFile	5
+../FATFS/Target/SDCard.c:116:9:SD_ReadFromFile	3
+../FATFS/Target/SDCard.c:130:9:SD_DeleteFile	1

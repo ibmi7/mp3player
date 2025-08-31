@@ -1,0 +1,9 @@
+../FATFS/Target/sd_spi.c:10:13:CS_LOW	1
+../FATFS/Target/sd_spi.c:14:13:CS_HIGH	1
+../FATFS/Target/sd_spi.c:18:13:SD_SPI_Sync	3
+../FATFS/Target/sd_spi.c:33:13:SD_SendCommand	4
+../FATFS/Target/sd_spi.c:70:9:SD_SPI_Init	14
+../FATFS/Target/sd_spi.c:124:9:SD_SPI_ReadBlocks	6
+../FATFS/Target/sd_spi.c:153:9:SD_SPI_WriteBlocks	9
+../FATFS/Target/sd_spi.c:214:9:SD_SPI_IsInserted	1
+../FATFS/Target/sd_spi.c:219:9:SD_SPI_ioctl	2

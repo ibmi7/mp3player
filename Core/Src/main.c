@@ -19,10 +19,20 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
+#include "fatfs.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdint.h>
+#include <string.h>
+#include <stdarg.h> //for va_list var arg functions
+#include <stdio.h>
+#include "SDCard.h"
+#include "ff.h"
+#include "portmacro.h"
+#include "stm32f411xe.h"
+#include "stm32f4xx_hal_def.h"
+#include "stm32f4xx_hal_gpio.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -32,7 +42,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define STREAM_BUFFER_NUM 4
+#define STREAM_BUFFER_SIZE 4096 //use 4KB for buffer
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -41,7 +52,9 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-UART_HandleTypeDef huart1;
+SPI_HandleTypeDef hspi1;
+
+UART_HandleTypeDef huart2;
 
 osThreadId defaultTaskHandle;
 osThreadId GUI_TaskHandle;
@@ -49,28 +62,45 @@ osThreadId Audio_TaskHandle;
 osThreadId Mp3Decoder_TaskHandle;
 osThreadId SdCard_TaskHandle;
 osThreadId Playback_TaskHandle;
+osThreadId UART_TaskHandle;
+osMessageQId sdQueueHandle;
+osMessageQId uartQueueHandle;
+osMessageQId freeBufferQueueHandle;
+osMessageQId filledBufferQueueHandle;
 /* USER CODE BEGIN PV */
-
+static uint8_t sdBuffers[STREAM_BUFFER_NUM][STREAM_BUFFER_SIZE];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_USART1_UART_Init(void);
+static void MX_SPI1_Init(void);
+static void MX_USART2_UART_Init(void);
 void StartDefaultTask(void const * argument);
-void GUI_Init(void const * argument);
-void Audio_Init(void const * argument);
-void Decoder_Init(void const * argument);
-void SD_Init(void const * argument);
-void Playback_Init(void const * argument);
+void GUI_Start(void const * argument);
+void Audio_Start(void const * argument);
+void Decoder_Start(void const * argument);
+void SD_Start(void const * argument);
+void Playback_Start(void const * argument);
+void UART_Start(void const * argument);
 
 /* USER CODE BEGIN PFP */
-
+void myprintf(const char *fmt, ...);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void myprintf(const char *fmt, ...) {
+  char buffer[256];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buffer, sizeof(buffer), fmt, args);
+  va_end(args);
+  char *msg = pvPortMalloc(strlen(buffer)+1);
+  strcpy(msg, buffer);
+  xQueueSend(uartQueueHandle, &msg, portMAX_DELAY);
 
+}
 /* USER CODE END 0 */
 
 /**
@@ -102,7 +132,9 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_USART1_UART_Init();
+  MX_SPI1_Init();
+  MX_USART2_UART_Init();
+  MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
@@ -119,6 +151,23 @@ int main(void)
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
+  /* Create the queue(s) */
+  /* definition and creation of sdQueue */
+  osMessageQDef(sdQueue, 16, SD_Job_t*);
+  sdQueueHandle = osMessageCreate(osMessageQ(sdQueue), NULL);
+
+  /* definition and creation of uartQueue */
+  osMessageQDef(uartQueue, 16, char*);
+  uartQueueHandle = osMessageCreate(osMessageQ(uartQueue), NULL);
+
+  /* definition and creation of freeBufferQueue */
+  osMessageQDef(freeBufferQueue, 4, void*);
+  freeBufferQueueHandle = osMessageCreate(osMessageQ(freeBufferQueue), NULL);
+
+  /* definition and creation of filledBufferQueue */
+  osMessageQDef(filledBufferQueue, 4, void*);
+  filledBufferQueueHandle = osMessageCreate(osMessageQ(filledBufferQueue), NULL);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -129,24 +178,28 @@ int main(void)
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* definition and creation of GUI_Task */
-  osThreadDef(GUI_Task, GUI_Init, osPriorityBelowNormal, 0, 1024);
+  osThreadDef(GUI_Task, GUI_Start, osPriorityBelowNormal, 0, 1024);
   GUI_TaskHandle = osThreadCreate(osThread(GUI_Task), NULL);
 
   /* definition and creation of Audio_Task */
-  osThreadDef(Audio_Task, Audio_Init, osPriorityHigh, 0, 256);
+  osThreadDef(Audio_Task, Audio_Start, osPriorityRealtime, 0, 256);
   Audio_TaskHandle = osThreadCreate(osThread(Audio_Task), NULL);
 
   /* definition and creation of Mp3Decoder_Task */
-  osThreadDef(Mp3Decoder_Task, Decoder_Init, osPriorityAboveNormal, 0, 1024);
+  osThreadDef(Mp3Decoder_Task, Decoder_Start, osPriorityHigh, 0, 1024);
   Mp3Decoder_TaskHandle = osThreadCreate(osThread(Mp3Decoder_Task), NULL);
 
   /* definition and creation of SdCard_Task */
-  osThreadDef(SdCard_Task, SD_Init, osPriorityAboveNormal, 0, 512);
+  osThreadDef(SdCard_Task, SD_Start, osPriorityAboveNormal, 0, 512);
   SdCard_TaskHandle = osThreadCreate(osThread(SdCard_Task), NULL);
 
   /* definition and creation of Playback_Task */
-  osThreadDef(Playback_Task, Playback_Init, osPriorityNormal, 0, 256);
+  osThreadDef(Playback_Task, Playback_Start, osPriorityNormal, 0, 256);
   Playback_TaskHandle = osThreadCreate(osThread(Playback_Task), NULL);
+
+  /* definition and creation of UART_Task */
+  osThreadDef(UART_Task, UART_Start, osPriorityLow, 0, 512);
+  UART_TaskHandle = osThreadCreate(osThread(UART_Task), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -219,35 +272,73 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief USART1 Initialization Function
+  * @brief SPI1 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_USART1_UART_Init(void)
+static void MX_SPI1_Init(void)
 {
 
-  /* USER CODE BEGIN USART1_Init 0 */
+  /* USER CODE BEGIN SPI1_Init 0 */
 
-  /* USER CODE END USART1_Init 0 */
+  /* USER CODE END SPI1_Init 0 */
 
-  /* USER CODE BEGIN USART1_Init 1 */
+  /* USER CODE BEGIN SPI1_Init 1 */
 
-  /* USER CODE END USART1_Init 1 */
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN USART1_Init 2 */
+  /* USER CODE BEGIN SPI1_Init 2 */
 
-  /* USER CODE END USART1_Init 2 */
+  /* USER CODE END SPI1_Init 2 */
+
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
 
 }
 
@@ -269,17 +360,17 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(SD_SPI_CS_GPIO_Port, SD_SPI_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : PA5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_5;
+  /*Configure GPIO pin : SD_SPI_CS_Pin */
+  GPIO_InitStruct.Pin = SD_SPI_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(SD_SPI_CS_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PB5 */
   GPIO_InitStruct.Pin = GPIO_PIN_5;
@@ -308,103 +399,247 @@ void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN 5 */
   /* Infinite loop */
-  for(;;)
-  {
-	  HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-	  osDelay(1000);
-  }
+    // create sd job
+    static SD_Job_t job;
+    job.type = SD_JOB_LISTDIRECTORY;
+    SD_SubmitJob(&job, sdQueueHandle);
+    for(;;)
+    {
+        osDelay(1);
+    }
   /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_GUI_Init */
+/* USER CODE BEGIN Header_GUI_Start */
 /**
 * @brief Function implementing the GUI_Task thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_GUI_Init */
-void GUI_Init(void const * argument)
+/* USER CODE END Header_GUI_Start */
+void GUI_Start(void const * argument)
 {
-  /* USER CODE BEGIN GUI_Init */
+  /* USER CODE BEGIN GUI_Start */
   /* Infinite loop */
   for(;;)
   {
-	  HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
-	  osDelay(100);
+    osDelay(1);
   }
-  /* USER CODE END GUI_Init */
+  /* USER CODE END GUI_Start */
 }
 
-/* USER CODE BEGIN Header_Audio_Init */
+/* USER CODE BEGIN Header_Audio_Start */
 /**
 * @brief Function implementing the Audio_Task thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_Audio_Init */
-void Audio_Init(void const * argument)
+/* USER CODE END Header_Audio_Start */
+void Audio_Start(void const * argument)
 {
-  /* USER CODE BEGIN Audio_Init */
+  /* USER CODE BEGIN Audio_Start */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END Audio_Init */
+  /* USER CODE END Audio_Start */
 }
 
-/* USER CODE BEGIN Header_Decoder_Init */
+/* USER CODE BEGIN Header_Decoder_Start */
 /**
 * @brief Function implementing the Mp3Decoder_Task thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_Decoder_Init */
-void Decoder_Init(void const * argument)
+/* USER CODE END Header_Decoder_Start */
+void Decoder_Start(void const * argument)
 {
-  /* USER CODE BEGIN Decoder_Init */
+  /* USER CODE BEGIN Decoder_Start */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END Decoder_Init */
+  /* USER CODE END Decoder_Start */
 }
 
-/* USER CODE BEGIN Header_SD_Init */
+/* USER CODE BEGIN Header_SD_Start */
 /**
 * @brief Function implementing the SdCard_Task thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_SD_Init */
-void SD_Init(void const * argument)
+/* USER CODE END Header_SD_Start */
+void SD_Start(void const * argument)
 {
-  /* USER CODE BEGIN SD_Init */
+  /* USER CODE BEGIN SD_Start */
   /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END SD_Init */
+    SD_Job_t *currentJob;
+    FIL file;
+    FRESULT res;
+    void* stream_buffer;
+    osDelay(1000);
+    /* Initialize buffers */
+    for (int i = 0; i < STREAM_BUFFER_NUM; i++) {
+      void *ptr = sdBuffers[i];
+      xQueueSend(freeBufferQueueHandle, &ptr, 0);
+    }
+    /* Initialie SD Card*/
+    res = SD_Initialize();
+    if (res != FR_OK)
+    {
+        myprintf("Failed to initialize SD Card with error %d\n", res);
+        while(1);
+    }
+    myprintf("SD Initialized.\n");
+    for(;;)
+    {
+        /* State Machine handling*/
+        if (xQueueReceive(sdQueueHandle, &currentJob, portMAX_DELAY) == pdPASS)
+        {
+            switch (currentJob->type) {
+                case SD_JOB_CREATE:
+                {
+                    res = f_open(&file, currentJob->filename, FA_CREATE_NEW | FA_WRITE);
+                    if (res == FR_OK) f_close(&file);
+                    currentJob->status = (res == FR_OK || res == FR_EXIST) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
+                    currentJob->fresult = res;
+                    break;
+                }
+                case SD_JOB_READ:
+                {
+                    res = f_open(&file, currentJob->filename, FA_READ);
+                    if ( res == FR_OK) res = f_read(&file, currentJob->buffer, currentJob->length, &(currentJob->bytesTransferred));
+                    f_close(&file);
+                    currentJob->status = (res == FR_OK) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
+                    currentJob->fresult = res;
+                    break;
+                }
+                case SD_JOB_WRITE:
+                {
+                    res = f_open(&file, currentJob->filename, FA_WRITE | FA_OPEN_ALWAYS);
+                    if (res == FR_OK) res = f_lseek(&file, f_size(&file));  // Move to EOF to append
+                    if (res == FR_OK) res = f_write(&file, currentJob->buffer, currentJob->length, &(currentJob->bytesTransferred));
+                    f_close(&file);
+                    currentJob->status = (res == FR_OK) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
+                    currentJob->fresult = res;
+                    break;
+                }
+                case SD_JOB_GETINFO:
+                {
+                    res = SD_GetInfo(&(currentJob->info->totalMB), &(currentJob->info->freeMB));
+                    currentJob->status = (res == FR_OK) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
+                    currentJob->fresult = res;
+                    break;
+                    
+                }
+                case SD_JOB_FORMAT:
+                {
+                    BYTE work[_MAX_SS];
+                    res = f_mkfs("", FM_ANY, 0, work, sizeof(work));
+                    currentJob->status = (res == FR_OK) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
+                    currentJob->fresult = res;
+                    break;
+                }
+                case SD_JOB_LISTDIRECTORY:
+                {
+                    DIR dir;
+                    FILINFO fno;
+                    FRESULT res;
+                    res = f_opendir(&dir, currentJob->filename);
+                    if ( res != FR_OK) {
+                        myprintf("Failed to open directory.\n");
+                    }
+                    else
+                    {
+                      while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
+                          // Format output: add file/dir type, size, etc. as needed
+                          myprintf("%s%s\n", (fno.fattrib & AM_DIR) ? "[DIR] " : "      ", fno.fname);
+                      }
+                      res = f_closedir(&dir);
+                    }
+                    currentJob->status = (res == FR_OK) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
+                    currentJob->fresult = res;
+
+                    break;
+                }
+                case SD_JOB_DELETE:
+                {
+                    res = f_unlink(currentJob->filename);
+                    currentJob->status = (res == FR_OK) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
+                    currentJob->fresult = res;
+                    break;
+                }
+                case SD_JOB_STREAM:
+                {
+                  res = f_open(&file, currentJob->filename, FA_READ);
+                  for (;;){
+                    if (xQueueReceive(freeBufferQueueHandle, &stream_buffer, portMAX_DELAY)){
+                      f_read(&file, stream_buffer, STREAM_BUFFER_SIZE, &(currentJob->bytesTransferred));
+                      xQueueSend(filledBufferQueueHandle, &stream_buffer, portMAX_DELAY);
+
+                      if (currentJob->bytesTransferred < STREAM_BUFFER_SIZE){
+                        // EOF reached, job done
+                        currentJob->status = SD_JOB_SUCCESS;
+                        break;
+                      }
+                    }
+                  }
+
+                  break;
+                }
+                default:
+                {
+                    // Unknown job type
+                    currentJob->status = SD_JOB_FAILED;
+                    currentJob->fresult = FR_INVALID_PARAMETER;
+                    break;
+                }
+            }
+        }
+    }
+  /* USER CODE END SD_Start */
 }
 
-/* USER CODE BEGIN Header_Playback_Init */
+/* USER CODE BEGIN Header_Playback_Start */
 /**
 * @brief Function implementing the Playback_Task thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_Playback_Init */
-void Playback_Init(void const * argument)
+/* USER CODE END Header_Playback_Start */
+void Playback_Start(void const * argument)
 {
-  /* USER CODE BEGIN Playback_Init */
+  /* USER CODE BEGIN Playback_Start */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END Playback_Init */
+  /* USER CODE END Playback_Start */
+}
+
+/* USER CODE BEGIN Header_UART_Start */
+/**
+* @brief Function implementing the UART_Task thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_UART_Start */
+void UART_Start(void const * argument)
+{
+  /* USER CODE BEGIN UART_Start */
+  /* Infinite loop */
+  char* msg;
+  for(;;)
+  {
+    if (xQueueReceive(uartQueueHandle, &(msg), portMAX_DELAY)){
+        HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+        vPortFree(msg); 
+    }
+  }
+  /* USER CODE END UART_Start */
 }
 
 /**
@@ -443,8 +678,7 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
