@@ -33,6 +33,9 @@
 #include "stm32f411xe.h"
 #include "stm32f4xx_hal_def.h"
 #include "stm32f4xx_hal_gpio.h"
+#define MINIMP3_IMPLEMENTATION
+#define MINIMP3_ONLY_MP3
+#include "minimp3.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,8 +45,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
 #define STREAM_BUFFER_NUM 4
-#define STREAM_BUFFER_SIZE 4096 //use 4KB for buffer
+#define STREAM_BUFFER_SIZE 2048 //use 2KB for buffer
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -52,6 +56,9 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+I2S_HandleTypeDef hi2s2;
+DMA_HandleTypeDef hdma_spi2_tx;
+
 SPI_HandleTypeDef hspi1;
 
 UART_HandleTypeDef huart2;
@@ -67,6 +74,7 @@ osMessageQId sdQueueHandle;
 osMessageQId uartQueueHandle;
 osMessageQId freeBufferQueueHandle;
 osMessageQId filledBufferQueueHandle;
+osSemaphoreId i2sDmaDoneSemHandle;
 /* USER CODE BEGIN PV */
 static uint8_t sdBuffers[STREAM_BUFFER_NUM][STREAM_BUFFER_SIZE];
 /* USER CODE END PV */
@@ -74,8 +82,10 @@ static uint8_t sdBuffers[STREAM_BUFFER_NUM][STREAM_BUFFER_SIZE];
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_I2S2_Init(void);
 void StartDefaultTask(void const * argument);
 void GUI_Start(void const * argument);
 void Audio_Start(void const * argument);
@@ -100,6 +110,13 @@ void myprintf(const char *fmt, ...) {
   strcpy(msg, buffer);
   xQueueSend(uartQueueHandle, &msg, portMAX_DELAY);
 
+}
+
+void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s)
+{
+  BaseType_t woken = pdFALSE;
+  xSemaphoreGiveFromISR(i2sDmaDoneSemHandle, &woken);
+  portYIELD_FROM_ISR(woken);
 }
 /* USER CODE END 0 */
 
@@ -132,9 +149,11 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_SPI1_Init();
   MX_USART2_UART_Init();
   MX_FATFS_Init();
+  MX_I2S2_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
@@ -142,6 +161,11 @@ int main(void)
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
   /* USER CODE END RTOS_MUTEX */
+
+  /* Create the semaphores(s) */
+  /* definition and creation of i2sDmaDoneSem */
+  osSemaphoreDef(i2sDmaDoneSem);
+  i2sDmaDoneSemHandle = osSemaphoreCreate(osSemaphore(i2sDmaDoneSem), 1);
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
@@ -157,7 +181,7 @@ int main(void)
   sdQueueHandle = osMessageCreate(osMessageQ(sdQueue), NULL);
 
   /* definition and creation of uartQueue */
-  osMessageQDef(uartQueue, 16, char*);
+  osMessageQDef(uartQueue, 8, char*);
   uartQueueHandle = osMessageCreate(osMessageQ(uartQueue), NULL);
 
   /* definition and creation of freeBufferQueue */
@@ -186,7 +210,7 @@ int main(void)
   Audio_TaskHandle = osThreadCreate(osThread(Audio_Task), NULL);
 
   /* definition and creation of Mp3Decoder_Task */
-  osThreadDef(Mp3Decoder_Task, Decoder_Start, osPriorityHigh, 0, 1024);
+  osThreadDef(Mp3Decoder_Task, Decoder_Start, osPriorityHigh, 0, 8192);
   Mp3Decoder_TaskHandle = osThreadCreate(osThread(Mp3Decoder_Task), NULL);
 
   /* definition and creation of SdCard_Task */
@@ -272,6 +296,40 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief I2S2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2S2_Init(void)
+{
+
+  /* USER CODE BEGIN I2S2_Init 0 */
+
+  /* USER CODE END I2S2_Init 0 */
+
+  /* USER CODE BEGIN I2S2_Init 1 */
+
+  /* USER CODE END I2S2_Init 1 */
+  hi2s2.Instance = SPI2;
+  hi2s2.Init.Mode = I2S_MODE_MASTER_TX;
+  hi2s2.Init.Standard = I2S_STANDARD_PHILIPS;
+  hi2s2.Init.DataFormat = I2S_DATAFORMAT_16B;
+  hi2s2.Init.MCLKOutput = I2S_MCLKOUTPUT_ENABLE;
+  hi2s2.Init.AudioFreq = I2S_AUDIOFREQ_44K;
+  hi2s2.Init.CPOL = I2S_CPOL_LOW;
+  hi2s2.Init.ClockSource = I2S_CLOCK_PLL;
+  hi2s2.Init.FullDuplexMode = I2S_FULLDUPLEXMODE_DISABLE;
+  if (HAL_I2S_Init(&hi2s2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2S2_Init 2 */
+
+  /* USER CODE END I2S2_Init 2 */
+
+}
+
+/**
   * @brief SPI1 Initialization Function
   * @param None
   * @retval None
@@ -343,6 +401,22 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream4_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream4_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream4_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -356,6 +430,7 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
@@ -401,7 +476,9 @@ void StartDefaultTask(void const * argument)
   /* Infinite loop */
     // create sd job
     static SD_Job_t job;
+    char filename[] = "TOPIMPABUTTERFLY";
     job.type = SD_JOB_LISTDIRECTORY;
+    strcpy(job.filename, filename); 
     SD_SubmitJob(&job, sdQueueHandle);
     for(;;)
     {
@@ -456,10 +533,40 @@ void Audio_Start(void const * argument)
 void Decoder_Start(void const * argument)
 {
   /* USER CODE BEGIN Decoder_Start */
+  void *buf;
+  static mp3dec_t mp3d;
+  static mp3dec_frame_info_t info;
+  mp3dec_init(&mp3d);
+  static int16_t pcm[STREAM_BUFFER_SIZE];  // PCM output buffer
+  int bytesConsumed;
+  vQueueAddToRegistry(i2sDmaDoneSemHandle, "I2S Semaphore");
+  myprintf("Total current stack is : %d\n", sizeof(mp3d)+sizeof(info)+sizeof(pcm)+sizeof(mp3dec_scratch_t) + sizeof(bs_t));
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    if (xQueueReceive(filledBufferQueueHandle, &buf, portMAX_DELAY)){
+      uint8_t *mp3Data = (uint8_t*)buf;
+      int bytesLeft = STREAM_BUFFER_SIZE;
+      while (bytesLeft > 0)
+      {
+        int samplesDecoded = mp3dec_decode_frame(&mp3d, mp3Data, bytesLeft, pcm, &info);
+        if (samplesDecoded > 0)
+        {
+            // Transmit PCM to I2S using DMA
+            HAL_I2S_Transmit_DMA(&hi2s2, (uint16_t*)pcm, samplesDecoded * 2); // stereo
+
+            // Wait for DMA complete
+            xSemaphoreTake(i2sDmaDoneSemHandle, portMAX_DELAY);
+        }
+        bytesConsumed = info.frame_bytes;;
+        mp3Data += bytesConsumed;
+        bytesLeft -= bytesConsumed;
+      }
+      // Return SD buffer to free pool
+      xQueueSend(freeBufferQueueHandle, &buf, portMAX_DELAY);
+      
+    }
+
   }
   /* USER CODE END Decoder_Start */
 }
@@ -485,6 +592,10 @@ void SD_Start(void const * argument)
       void *ptr = sdBuffers[i];
       xQueueSend(freeBufferQueueHandle, &ptr, 0);
     }
+    // debug purpose
+    vQueueAddToRegistry(freeBufferQueueHandle, "Free Buffers");
+    vQueueAddToRegistry(filledBufferQueueHandle, "Filled Buffers");
+    vQueueAddToRegistry(sdQueueHandle, "SD Jobs");
     /* Initialie SD Card*/
     res = SD_Initialize();
     if (res != FR_OK)
@@ -553,9 +664,10 @@ void SD_Start(void const * argument)
                     }
                     else
                     {
+                      myprintf("List of music in %s:\n", currentJob->filename);
                       while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
                           // Format output: add file/dir type, size, etc. as needed
-                          myprintf("%s%s\n", (fno.fattrib & AM_DIR) ? "[DIR] " : "      ", fno.fname);
+                          myprintf("\t%s/%s\n",currentJob->filename, fno.fname);
                       }
                       res = f_closedir(&dir);
                     }
@@ -613,6 +725,12 @@ void Playback_Start(void const * argument)
 {
   /* USER CODE BEGIN Playback_Start */
   /* Infinite loop */
+  //create sd job
+  static SD_Job_t job;
+  char filename[] = "TOPIMPABUTTERFLY/03 King Kunta.mp3";
+  job.type = SD_JOB_STREAM;
+  strcpy(job.filename, filename); 
+  SD_SubmitJob(&job, sdQueueHandle);
   for(;;)
   {
     osDelay(1);
@@ -632,6 +750,8 @@ void UART_Start(void const * argument)
   /* USER CODE BEGIN UART_Start */
   /* Infinite loop */
   char* msg;
+  // debug purpose
+  vQueueAddToRegistry(uartQueueHandle, "UART Msg");
   for(;;)
   {
     if (xQueueReceive(uartQueueHandle, &(msg), portMAX_DELAY)){
