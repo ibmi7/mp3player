@@ -50,85 +50,11 @@ FRESULT SD_Deinitialize(void)
     return f_mount(NULL, "", 1); // Unmount
 }
 
-
-FRESULT SD_Format(void)
+bool SD_SubmitJob(SD_Job_t *job, osMessageQId queueHandle)
 {
-    BYTE work[_MAX_SS];
-    return f_mkfs("", FM_ANY, 0, work, sizeof(work));
+    if(!job) return false;
+
+    job->status = SD_JOB_PENDING;
+    job->bytesTransferred = 0;
+    return xQueueSend(queueHandle, &job, 0) == pdTRUE; // 0 = non-blocking enqueue
 }
-
-FRESULT SD_ListDirectory(const char *path, void (*print_fn)(const char *fmt, ...))
-{
-    DIR dir;
-    FILINFO fno;
-    FRESULT res;
-    char line[128];
-    res = f_opendir(&dir, path);
-    if ( res != FR_OK) {
-        print_fn("Failed to open directory.\n");
-        return res;
-    }
-
-    while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
-        // Format output: add file/dir type, size, etc. as needed
-        snprintf(line, sizeof(line), "%s%s\n", (fno.fattrib & AM_DIR) ? "[DIR] " : "      ", fno.fname);
-        print_fn(line);
-    }
-
-    return f_closedir(&dir);
-}
-
-
-FRESULT SD_CreateFile(const char *path)
-{
-    FIL file;
-    FRESULT res = f_open(&file, path, FA_CREATE_NEW | FA_WRITE);
-    if (res == FR_EXIST) return res; // Already exists
-    if (res != FR_OK) return res;
-
-    return f_close(&file);
-}
-
-FRESULT SD_WriteToFile(const char *path, const void *data, uint32_t length, uint16_t *written)
-{
-    FIL file;
-    FRESULT res;
-
-    res = f_open(&file, path, FA_WRITE | FA_OPEN_ALWAYS);
-    if (res != FR_OK) return res;
-
-    res = f_lseek(&file, f_size(&file));  // Move to EOF to append
-    if (res != FR_OK) {
-        f_close(&file);
-        return res;
-    }
-
-    res = f_write(&file, data, length, written);
-    if (res != FR_OK) {
-        f_close(&file); // try to clean up anyway
-        return res != FR_OK ? res : FR_DISK_ERR;
-    }
-
-    return f_close(&file);
-
-}
-
-FRESULT SD_ReadFromFile(const char *path, void *buffer, uint32_t bufsize, uint32_t *bytesRead)
-{
-    FIL file;
-    UINT br;
-    FRESULT res;
-    res = f_open(&file, path, FA_READ);
-    if ( res != FR_OK) return res;
-    res = f_read(&file, buffer, bufsize, &br);
-    f_close(&file);
-
-    if (bytesRead) *bytesRead = br;
-    return (res);
-}
-
-FRESULT SD_DeleteFile(const char *path)
-{
-    return f_unlink(path);
-}
-

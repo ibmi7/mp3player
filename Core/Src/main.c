@@ -23,11 +23,15 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdint.h>
 #include <string.h>
 #include <stdarg.h> //for va_list var arg functions
 #include <stdio.h>
 #include "SDCard.h"
+#include "ff.h"
+#include "portmacro.h"
 #include "stm32f411xe.h"
+#include "stm32f4xx_hal_def.h"
 #include "stm32f4xx_hal_gpio.h"
 /* USER CODE END Includes */
 
@@ -57,6 +61,9 @@ osThreadId Audio_TaskHandle;
 osThreadId Mp3Decoder_TaskHandle;
 osThreadId SdCard_TaskHandle;
 osThreadId Playback_TaskHandle;
+osThreadId UART_TaskHandle;
+osMessageQId sdQueueHandle;
+osMessageQId uartQueueHandle;
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -72,6 +79,7 @@ void Audio_Start(void const * argument);
 void Decoder_Start(void const * argument);
 void SD_Start(void const * argument);
 void Playback_Start(void const * argument);
+void UART_Start(void const * argument);
 
 /* USER CODE BEGIN PFP */
 void myprintf(const char *fmt, ...);
@@ -80,14 +88,14 @@ void myprintf(const char *fmt, ...);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 void myprintf(const char *fmt, ...) {
-  static char buffer[256];
+  char buffer[256];
   va_list args;
   va_start(args, fmt);
   vsnprintf(buffer, sizeof(buffer), fmt, args);
   va_end(args);
-
-  int len = strlen(buffer);
-  HAL_UART_Transmit(&huart2, (uint8_t*)buffer, len, -1);
+  char *msg = pvPortMalloc(strlen(buffer)+1);
+  strcpy(msg, buffer);
+  xQueueSend(uartQueueHandle, &msg, portMAX_DELAY);
 
 }
 /* USER CODE END 0 */
@@ -140,6 +148,15 @@ int main(void)
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
+  /* Create the queue(s) */
+  /* definition and creation of sdQueue */
+  osMessageQDef(sdQueue, 16, SD_Job_t*);
+  sdQueueHandle = osMessageCreate(osMessageQ(sdQueue), NULL);
+
+  /* definition and creation of uartQueue */
+  osMessageQDef(uartQueue, 16, char*);
+  uartQueueHandle = osMessageCreate(osMessageQ(uartQueue), NULL);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -168,6 +185,10 @@ int main(void)
   /* definition and creation of Playback_Task */
   osThreadDef(Playback_Task, Playback_Start, osPriorityNormal, 0, 256);
   Playback_TaskHandle = osThreadCreate(osThread(Playback_Task), NULL);
+
+  /* definition and creation of UART_Task */
+  osThreadDef(UART_Task, UART_Start, osPriorityLow, 0, 512);
+  UART_TaskHandle = osThreadCreate(osThread(UART_Task), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -262,7 +283,7 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -367,10 +388,14 @@ void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN 5 */
   /* Infinite loop */
-  for(;;)
-  {
-	  osDelay(1);
-  }
+    // create sd job
+    static SD_Job_t job;
+    job.type = SD_JOB_LISTDIRECTORY;
+    SD_SubmitJob(&job, sdQueueHandle);
+    for(;;)
+    {
+        osDelay(1);
+    }
   /* USER CODE END 5 */
 }
 
@@ -439,10 +464,105 @@ void SD_Start(void const * argument)
 {
   /* USER CODE BEGIN SD_Start */
   /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+    SD_Job_t *currentJob;
+    FIL file;
+    FRESULT res;
+    osDelay(1000);
+    res = SD_Initialize();
+    if (res != FR_OK)
+    {
+        myprintf("Failed to initialize SD Card with error %d\n", res);
+        while(1);
+    }
+
+    myprintf("SD Initialized.\n");
+    for(;;)
+    {
+        /* State Machine handling*/
+        if (xQueueReceive(sdQueueHandle, &currentJob, portMAX_DELAY) == pdPASS)
+        {
+            switch (currentJob->type) {
+                case SD_JOB_CREATE:
+                {
+                    res = f_open(&file, currentJob->filename, FA_CREATE_NEW | FA_WRITE);
+                    if (res == FR_OK) f_close(&file);
+                    currentJob->status = (res == FR_OK || res == FR_EXIST) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
+                    currentJob->fresult = res;
+                    break;
+                }
+                case SD_JOB_READ:
+                {
+                    res = f_open(&file, currentJob->filename, FA_READ);
+                    if ( res == FR_OK) res = f_read(&file, currentJob->buffer, currentJob->length, &(currentJob->bytesTransferred));
+                    f_close(&file);
+                    currentJob->status = (res == FR_OK) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
+                    currentJob->fresult = res;
+                    break;
+                }
+                case SD_JOB_WRITE:
+                {
+                    res = f_open(&file, currentJob->filename, FA_WRITE | FA_OPEN_ALWAYS);
+                    if (res == FR_OK) res = f_lseek(&file, f_size(&file));  // Move to EOF to append
+                    if (res == FR_OK) res = f_write(&file, currentJob->buffer, currentJob->length, &(currentJob->bytesTransferred));
+                    f_close(&file);
+                    currentJob->status = (res == FR_OK) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
+                    currentJob->fresult = res;
+                    break;
+                }
+                case SD_JOB_GETINFO:
+                {
+                    res = SD_GetInfo(&(currentJob->info->totalMB), &(currentJob->info->freeMB));
+                    currentJob->status = (res == FR_OK) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
+                    currentJob->fresult = res;
+                    
+                }
+                case SD_JOB_FORMAT:
+                {
+                    BYTE work[_MAX_SS];
+                    res = f_mkfs("", FM_ANY, 0, work, sizeof(work));
+                    currentJob->status = (res == FR_OK) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
+                    currentJob->fresult = res;
+                    break;
+                }
+                case SD_JOB_LISTDIRECTORY:
+                {
+                    DIR dir;
+                    FILINFO fno;
+                    FRESULT res;
+                    res = f_opendir(&dir, currentJob->filename);
+                    if ( res != FR_OK) {
+                        myprintf("Failed to open directory.\n");
+                    }
+                    else
+                    {
+                        while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
+                            // Format output: add file/dir type, size, etc. as needed
+                            myprintf("%s%s\n", (fno.fattrib & AM_DIR) ? "[DIR] " : "      ", fno.fname);
+                        }
+                        res = f_closedir(&dir);
+                    }
+                    currentJob->status = (res == FR_OK) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
+                    currentJob->fresult = res;
+
+                    break;
+                }
+                case SD_JOB_DELETE:
+                {
+                    res = f_unlink(currentJob->filename);
+                    currentJob->status = (res == FR_OK) ? SD_JOB_SUCCESS : SD_JOB_FAILED;
+                    currentJob->fresult = res;
+                    break;
+                }
+                default:
+                {
+                    // Unknown job type
+                    currentJob->status = SD_JOB_FAILED;
+                    currentJob->fresult = FR_INVALID_PARAMETER;
+                    break;
+                }
+            }
+        }
+    }
   /* USER CODE END SD_Start */
 }
 
@@ -462,6 +582,28 @@ void Playback_Start(void const * argument)
     osDelay(1);
   }
   /* USER CODE END Playback_Start */
+}
+
+/* USER CODE BEGIN Header_UART_Start */
+/**
+* @brief Function implementing the UART_Task thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_UART_Start */
+void UART_Start(void const * argument)
+{
+  /* USER CODE BEGIN UART_Start */
+  /* Infinite loop */
+  char* msg;
+  for(;;)
+  {
+    if (xQueueReceive(uartQueueHandle, &(msg), portMAX_DELAY)){
+        HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+        vPortFree(msg); 
+    }
+  }
+  /* USER CODE END UART_Start */
 }
 
 /**
